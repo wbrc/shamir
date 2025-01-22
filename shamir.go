@@ -93,6 +93,19 @@ func (d *Dealer) Combine(shares [][]byte) ([]byte, error) {
 	return secret, nil
 }
 
+// Default is a zero-value Dealer ready to use with default settings.
+var Default = new(Dealer)
+
+// Split a secret using the default dealer.
+func Split(threshold, n int, secret []byte) ([][]byte, error) {
+	return Default.Split(threshold, n, secret)
+}
+
+// Combine a secret using the default dealer.
+func Combine(shares [][]byte) ([]byte, error) {
+	return Default.Combine(shares)
+}
+
 func (d *Dealer) init() {
 	if d.F == 0 {
 		d.F = defaultField
