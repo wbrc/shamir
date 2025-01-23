@@ -231,6 +231,15 @@ func Test_combine(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "unsolvable",
+			shares: [][]uint16{
+				{0xa7f0, 0xc423, 0xe7ac},
+				{0xe7a, 0xdcbc, 0x4e6e},
+				{0xe7a, 0xdcbc, 0x4e6e},
+			},
+			wantErr: true,
+		},
+		{
 			name: "valid",
 			shares: [][]uint16{
 				{0xa7f0, 0xc423, 0xe7ac},
