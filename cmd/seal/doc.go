@@ -2,8 +2,9 @@
 // Secret Sharing.
 //
 // Usage:
-// seal -i <input> -o <output> -s <shares> -t <threshold> -n <share count>
-// seal -u -i <input> -o <output> -s <shares>
+//
+//	seal -i <input> -o <output> -s <shares> -t <threshold> -n <share count>
+//	seal -u -i <input> -o <output> -s <shares>
 //
 // The <input> and <output> files are optional and, if omitted (or set to '-'),
 // will default to stdin and stdout respectively. The <shares> file is always
@@ -34,10 +35,10 @@
 // Encrypt the file 'archive.tar.gz' and split the key into 300 shares,
 // requiring 201 to unseal:
 //
-// > seal -i archive.tar.gz -o archive.tar.gz.seal -s shares.txt -t 201 -n 300
+//	seal -i archive.tar.gz -o archive.tar.gz.seal -s shares.txt -t 201 -n 300
 //
 // Decrypt the file 'archive.tar.gz.seal' using the shares in 'shares.txt' (must
 // contain at least 201 distinct shares):
 //
-// > seal -u -i archive.tar.gz.seal -o archive.tar.gz -s shares.txt
+//	seal -u -i archive.tar.gz.seal -o archive.tar.gz -s shares.txt
 package main
