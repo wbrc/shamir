@@ -40,7 +40,7 @@ var (
 	sharesFilename = flag.String("s", "", "file to write/read shares")
 	threshold      = flag.Int("t", 0, "threshold - number of shares required to unseal")
 	shareCount     = flag.Int("n", 0, "share count - number of shares to generate")
-	combineMode    = flag.Bool("u", false, "unseal mode")
+	combineMode    = flag.Bool("u", false, "unseal file")
 )
 
 const usage = `seal allows you to encrypt a file and split the key into shares using Shamir's
