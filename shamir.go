@@ -231,6 +231,7 @@ func combineSingle(f gf65536.Field, xvals, yvals []uint16) (uint16, error) {
 
 // creates len(v) random distinct values of GF(2^16)\0
 func distinctXes(random io.Reader, v []uint16) error {
+	xes := make(map[uint16]struct{}, len(v))
 	for i := 0; i < len(v); {
 		err := binary.Read(random, binary.NativeEndian, &v[i])
 		if err != nil {
@@ -240,6 +241,10 @@ func distinctXes(random io.Reader, v []uint16) error {
 		if v[i] == 0 {
 			continue
 		}
+		if _, ok := xes[v[i]]; ok {
+			continue
+		}
+		xes[v[i]] = struct{}{}
 		i++
 	}
 
