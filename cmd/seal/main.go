@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
@@ -11,7 +10,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 
 	"github.com/wbrc/gf65536"
 	"github.com/wbrc/shamir"
@@ -41,21 +42,25 @@ var (
 	threshold      = flag.Int("t", 0, "threshold - number of shares required to unseal")
 	shareCount     = flag.Int("n", 0, "share count - number of shares to generate")
 	combineMode    = flag.Bool("u", false, "unseal file")
+	encryptMode    = flag.String("m", "aes-256-gcm", "encryption mode")
 )
 
 const usage = `seal allows you to encrypt a file and split the key into shares using Shamir's
 Secret Sharing.
 
 Usage:
-seal -i <input> -o <output> -s <shares> -t <threshold> -n <share count>
-seal -u -i <input> -o <output> -s <shares>
+seal -i <input> -o <output> -s <shares> -t <threshold> -n <share count> -m <mode>
+seal -u -i <input> -o <output> -s <shares> -m <mode>
 
 The <input> and <output> files are optional and, if omitted (or set to '-'),
 will default to stdin and stdout respectively. The <shares> file is always
 required. When in seal mode, the <threshold> and <share count> flags are
 required, and the threshold must be less than or equal to the share count.
 The <shares> file will contain one share per line, in hexadecimal format. When
-in unseal mode, <shares> must contain at least <threshold> shares.
+in unseal mode, <shares> must contain at least <threshold> shares. The -m flag
+specifies the encryption mode to use. Supported modes are listed below. On
+unseal, the mode must match the mode used to seal. AEAD modes provide
+authenticated encryption, but the entire input/output is kept in memory.
 
 `
 
@@ -85,6 +90,15 @@ func main() {
 		fmt.Fprintf(flag.CommandLine.Output(), "Flags:\n")
 		flag.CommandLine.PrintDefaults()
 		fmt.Fprint(flag.CommandLine.Output(), description)
+		fmt.Fprint(flag.CommandLine.Output(), "Supported Modes:\n")
+
+		for _, name := range slices.Sorted(maps.Keys(modes)) {
+			var isAEAD string
+			if modes[name].isAEAD {
+				isAEAD = "(AEAD)"
+			}
+			fmt.Fprintf(flag.CommandLine.Output(), "  %s\n\t%s %s\n", name, modes[name].description, isAEAD)
+		}
 	}
 
 	flag.Parse()
@@ -97,6 +111,11 @@ func main() {
 }
 
 func run() error {
+	encryptionMode, ok := modes[*encryptMode]
+	if !ok {
+		return fmt.Errorf("unsupported mode: %s", *encryptMode)
+	}
+
 	var input io.Reader = os.Stdin
 	if *inputFilename != "" && *inputFilename != "-" {
 		f, err := os.Open(*inputFilename)
@@ -137,7 +156,7 @@ func run() error {
 		}
 		defer sharesFile.Close()
 
-		err = seal(input, output, sharesFile, *threshold, *shareCount)
+		err = seal(encryptionMode, input, output, sharesFile, *threshold, *shareCount)
 		if err != nil {
 			return err
 		}
@@ -148,7 +167,7 @@ func run() error {
 		}
 		defer sharesFile.Close()
 
-		err = unseal(input, output, sharesFile)
+		err = unseal(encryptionMode, input, output, sharesFile)
 		if err != nil {
 			return err
 		}
@@ -157,24 +176,45 @@ func run() error {
 	return nil
 }
 
-func seal(r io.Reader, w io.Writer, sharesW io.Writer, t, n int) error {
-	key := make([]byte, 32)
+func seal(encryptionMode mode, r io.Reader, w io.Writer, sharesW io.Writer, t, n int) error {
+	var (
+		key []byte
+		iv  []byte
+	)
+
+	key = make([]byte, encryptionMode.keySize)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return fmt.Errorf("failed to generate key: %w", err)
 	}
 
-	aesCipher, err := aes.NewCipher(key)
+	if encryptionMode.ivSize > 0 {
+		iv = make([]byte, encryptionMode.ivSize)
+		if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+			return fmt.Errorf("failed to generate iv: %w", err)
+		}
+	}
+
+	_, err := io.Copy(w, bytes.NewReader(iv))
+	if err != nil {
+		return fmt.Errorf("failed to write iv: %w", err)
+	}
+
+	c, err := encryptionMode.cipher(key, iv)
 	if err != nil {
 		return fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	aead, err := cipher.NewGCM(aesCipher)
-	if err != nil {
-		return fmt.Errorf("failed to create AEAD: %w", err)
-	}
-
-	if err := encrypt(aead, r, w); err != nil {
-		return fmt.Errorf("failed to encrypt: %w", err)
+	switch c := c.(type) {
+	case cipher.AEAD:
+		if err := encrypt(c, r, w); err != nil {
+			return fmt.Errorf("failed to encrypt: %w", err)
+		}
+	case cipher.Stream:
+		if err := stream(c, r, w); err != nil {
+			return fmt.Errorf("failed to encrypt: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported cipher type %T", c)
 	}
 
 	shares, err := dealer.Split(t, n, key)
@@ -189,7 +229,7 @@ func seal(r io.Reader, w io.Writer, sharesW io.Writer, t, n int) error {
 	return nil
 }
 
-func unseal(r io.Reader, w io.Writer, sharesR io.Reader) error {
+func unseal(encryptionMode mode, r io.Reader, w io.Writer, sharesR io.Reader) error {
 	var shares [][]byte
 	s := bufio.NewScanner(sharesR)
 	for s.Scan() {
@@ -209,18 +249,34 @@ func unseal(r io.Reader, w io.Writer, sharesR io.Reader) error {
 		return fmt.Errorf("failed to combine shares: %w", err)
 	}
 
-	aesCipher, err := aes.NewCipher(key)
+	if len(key) != encryptionMode.keySize {
+		return fmt.Errorf("invalid key size: expected %d, got %d", encryptionMode.keySize, len(key))
+	}
+
+	var iv []byte
+	if encryptionMode.ivSize > 0 {
+		iv = make([]byte, encryptionMode.ivSize)
+		if _, err := io.ReadFull(r, iv); err != nil {
+			return fmt.Errorf("failed to read iv: %w", err)
+		}
+	}
+
+	c, err := encryptionMode.cipher(key, iv)
 	if err != nil {
 		return fmt.Errorf("failed to create cipher: %w", err)
 	}
 
-	aead, err := cipher.NewGCM(aesCipher)
-	if err != nil {
-		return fmt.Errorf("failed to create AEAD: %w", err)
-	}
-
-	if err := decrypt(aead, r, w); err != nil {
-		return fmt.Errorf("failed to decrypt: %w", err)
+	switch c := c.(type) {
+	case cipher.AEAD:
+		if err := decrypt(c, r, w); err != nil {
+			return fmt.Errorf("failed to decrypt: %w", err)
+		}
+	case cipher.Stream:
+		if err := stream(c, r, w); err != nil {
+			return fmt.Errorf("failed to decrypt: %w", err)
+		}
+	default:
+		return fmt.Errorf("unsupported cipher type %T", c)
 	}
 
 	return nil
@@ -263,5 +319,13 @@ func decrypt(aead cipher.AEAD, r io.Reader, w io.Writer) error {
 		return fmt.Errorf("failed to write plaintext: %w", err)
 	}
 
+	return nil
+}
+
+func stream(c cipher.Stream, r io.Reader, w io.Writer) error {
+	streamWriter := cipher.StreamWriter{S: c, W: w}
+	if _, err := io.Copy(streamWriter, r); err != nil {
+		return fmt.Errorf("failed to write ciphertext: %w", err)
+	}
 	return nil
 }
